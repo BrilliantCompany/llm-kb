@@ -6,6 +6,7 @@ import { useAuth } from "@/lib/auth";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmbeddingSettingsCard } from "@/components/settings/embedding-settings-card";
 import { NotificationChannelsCard } from "@/components/settings/notification-channels-card";
+import { LlmCatalogCard } from "@/components/settings/llm-catalog-card";
 import {
   ModelCatalogCard,
   type ModelSpec,
@@ -77,15 +78,7 @@ export default function SettingsPage() {
       <div className="flex flex-col gap-6">
         <EmbeddingSettingsCard />
 
-        <ModelCatalogCard
-          title="LLM Model"
-          description="Used for entity extraction, planning, and wiki compilation."
-          icon="psychology"
-          catalogUrl="/api/settings/llm/catalog"
-          switchUrl="/api/settings/llm/switch"
-          apiKeyConfigKey="llm_api_key"
-          renderMeta={llmMeta}
-        />
+        <LlmCatalogCard renderMeta={llmMeta} />
 
         <ModelCatalogCard
           title="Vision Model"

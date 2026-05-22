@@ -138,6 +138,8 @@ class ProviderRegistry:
 
         svc = ConfigService(self.db)
         spec_id = await svc.get(ACTIVE_LLM_MODEL_KEY)
+        if spec_id == "custom":
+            return "custom"
         if spec_id and spec_id in LLM_CATALOG:
             return spec_id
         # Backward-compat: derive from legacy provider+model_id pair.
@@ -264,6 +266,25 @@ class ProviderRegistry:
         spec_id = await self.get_active_llm_spec_id()
         if not spec_id:
             raise ValueError("No active LLM. Pick one in Settings → LLM.")
+
+        # Custom OpenAI-compatible provider — not in the catalog.
+        if spec_id == "custom":
+            base_url = await svc.get("custom_llm_base_url")
+            api_key = await svc.get("custom_llm_api_key") or "none"
+            model_id = await svc.get("custom_llm_model_id") or ""
+            if not base_url or not model_id:
+                raise ValueError(
+                    "Custom provider not fully configured. "
+                    "Set the base URL and select a model in Settings → LLM."
+                )
+            return ProviderConfig(
+                provider=ProviderType.OPENAI,
+                api_key=api_key,
+                model_id=model_id,
+                base_url=base_url,
+                extra={"spec_id": "custom"},
+            )
+
         spec = get_spec(spec_id)
 
         api_key = await svc.get("llm_api_key") or ""
