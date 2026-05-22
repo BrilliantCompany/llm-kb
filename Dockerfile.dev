@@ -1,0 +1,45 @@
+# ============================================================
+# Arkon backend — DEVELOPMENT image
+#
+# Used by docker-compose.dev.yml for the api + worker + worker_skills
+# + migrator services.
+#
+# Unlike the production Dockerfile, application source is NOT copied
+# into the image. It is bind-mounted at runtime so `uvicorn --reload`
+# picks up edits without a rebuild. Only dependencies are baked in,
+# which keeps this layer cached until pyproject.toml changes.
+# ============================================================
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# System libraries:
+#   build-essential          — native wheels (asyncpg, hiredis, bcrypt, cryptography)
+#   libgl1 / libglib2.0-0    — PDF + image extraction (pymupdf / content-core)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --upgrade pip --no-cache-dir
+
+# Install runtime + dev dependencies. Only pyproject.toml is copied, so this
+# layer is reused from cache until dependencies change. No app source is
+# present, so an empty `arkon` package is built — that is intentional, the
+# real source is bind-mounted at /app and found via PYTHONPATH.
+#   - .[dev]      pytest, pytest-asyncio, ruff
+#   - watchfiles  gives uvicorn --reload fast, event-based file watching
+COPY pyproject.toml ./
+RUN touch README.md \
+    && pip install --no-cache-dir ".[dev]" watchfiles
+
+# App source (app/, alembic/, skills/, ...) is provided by bind mounts
+# declared in docker-compose.dev.yml. PYTHONPATH makes `app` importable.
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+
+EXPOSE 5055
+
+# Default command — overridden per-service in docker-compose.dev.yml.
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "5055", "--reload"]

@@ -29,6 +29,7 @@ ENV/
 pg_data/
 minio_data/
 data/
+.docker/
 
 # OS
 .DS_Store
