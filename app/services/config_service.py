@@ -30,7 +30,7 @@ def _is_sensitive(key: str) -> bool:
     return (
         key in {
             "embedding_api_key", "llm_api_key", "vision_api_key",
-            "smtp_password", "webhook_secret",
+            "smtp_password", "webhook_secret", "custom_llm_api_key",
         }
         or key.startswith("embedding_api_key__")  # per-provider keys
     )
@@ -66,9 +66,14 @@ ALL_CONFIG_KEYS = [
     "embedding_base_url",        # optional, custom endpoint (Ollama, Azure, proxy)
 
     # --- LLM (catalog-driven; old llm_provider/llm_model_id kept readable below) ---
-    ACTIVE_LLM_MODEL_KEY,        # canonical spec_id from LLM_CATALOG
+    ACTIVE_LLM_MODEL_KEY,        # canonical spec_id from LLM_CATALOG, or "custom"
     "llm_api_key",               # Provider API key
     "llm_base_url",              # Custom endpoint
+
+    # --- Custom OpenAI-compatible LLM provider ---
+    "custom_llm_base_url",       # e.g. https://my-proxy/v1
+    "custom_llm_api_key",        # encrypted; empty = no auth required
+    "custom_llm_model_id",       # model ID chosen from /v1/models
 
     # --- Vision (catalog-driven; old vision_provider/vision_model_id kept below) ---
     ACTIVE_VISION_MODEL_KEY,     # canonical spec_id from VISION_CATALOG

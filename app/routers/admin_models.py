@@ -70,6 +70,24 @@ class SwitchBody(BaseModel):
     model_spec_id: str
 
 
+class CustomProviderFetchBody(BaseModel):
+    base_url: str
+    api_key: str  # may be empty — backend falls back to stored key
+
+
+class CustomProviderActivateBody(BaseModel):
+    base_url: str
+    api_key: str  # empty = keep existing stored key
+    model_id: str
+
+
+class CustomProviderStatus(BaseModel):
+    active: bool
+    base_url: Optional[str]
+    api_key_configured: bool
+    model_id: Optional[str]
+
+
 # ---------------------------------------------------------------------------
 # LLM endpoints
 # ---------------------------------------------------------------------------
@@ -105,7 +123,10 @@ async def get_llm_catalog(
         )
         for s in list_specs()
     ]
-    return LLMCatalogOut(active_spec_id=active, specs=specs)
+    # When custom provider is active, return no active_spec_id for the catalog
+    # card so it doesn't try to match "custom" against catalog entries.
+    active_for_catalog = None if active == "custom" else active
+    return LLMCatalogOut(active_spec_id=active_for_catalog, specs=specs)
 
 
 @router.post("/settings/llm/switch")
@@ -171,6 +192,79 @@ async def get_vision_catalog(
         for s in list_specs()
     ]
     return VisionCatalogOut(active_spec_id=active, specs=specs)
+
+
+@router.get("/settings/llm/custom", response_model=CustomProviderStatus)
+async def get_custom_llm_status(
+    db: AsyncSession = Depends(get_db),
+    _user: Employee = require_permission("org:settings:manage"),
+):
+    from app.ai.registry import ProviderRegistry
+    from app.services.config_service import ConfigService
+
+    svc = ConfigService(db)
+    registry = ProviderRegistry(db)
+    active_spec = await registry.get_active_llm_spec_id()
+    base_url = await svc.get("custom_llm_base_url")
+    api_key = await svc.get("custom_llm_api_key")
+    model_id = await svc.get("custom_llm_model_id")
+    return CustomProviderStatus(
+        active=active_spec == "custom",
+        base_url=base_url,
+        api_key_configured=bool(api_key),
+        model_id=model_id,
+    )
+
+
+@router.post("/settings/llm/custom/fetch-models")
+async def fetch_custom_models(
+    body: CustomProviderFetchBody,
+    db: AsyncSession = Depends(get_db),
+    _user: Employee = require_permission("org:settings:manage"),
+):
+    from openai import AsyncOpenAI
+    from app.services.config_service import ConfigService
+
+    api_key = body.api_key
+    if not api_key:
+        svc = ConfigService(db)
+        api_key = await svc.get("custom_llm_api_key") or ""
+
+    try:
+        client = AsyncOpenAI(
+            api_key=api_key or "none",
+            base_url=body.base_url.rstrip("/"),
+        )
+        models_page = await client.models.list()
+        models = [
+            {"id": m.id, "owned_by": getattr(m, "owned_by", None)}
+            for m in models_page.data
+        ]
+        return {"models": models}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.post("/settings/llm/custom/activate")
+async def activate_custom_llm(
+    body: CustomProviderActivateBody,
+    db: AsyncSession = Depends(get_db),
+    _user: Employee = require_permission("org:settings:manage"),
+):
+    from app.services.config_service import ACTIVE_LLM_MODEL_KEY, ConfigService
+
+    svc = ConfigService(db)
+    if body.api_key:
+        await svc.set("custom_llm_api_key", body.api_key)
+    await svc.set("custom_llm_base_url", body.base_url.rstrip("/"))
+    await svc.set("custom_llm_model_id", body.model_id)
+    await svc.set(ACTIVE_LLM_MODEL_KEY, "custom")
+    await log_audit(
+        db, _user, "activate_custom_llm", "settings", "global",
+        reason=f"Activated custom provider at {body.base_url}, model={body.model_id}",
+    )
+    await db.commit()
+    return {"active_spec_id": "custom", "model_id": body.model_id}
 
 
 @router.post("/settings/vision/switch")
