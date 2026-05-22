@@ -4,7 +4,7 @@ x-backend: &backend
   build:
     context: .
     dockerfile: Dockerfile
-  image: arkon-backend:latest
+  image: llm-kb-backend:latest
   env_file: [.env.docker]
   restart: always
   depends_on:
@@ -22,7 +22,7 @@ services:
 
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: arkon_postgres
+    container_name: llm_kb_postgres
     restart: always
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-arkon}
@@ -40,7 +40,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: arkon_redis
+    container_name: llm_kb_redis
     restart: always
     command: redis-server --save 60 1 --loglevel warning --requirepass ${REDIS_PASSWORD:-arkon_secret}
     volumes:
@@ -55,7 +55,7 @@ services:
 
   minio:
     image: minio/minio:latest
-    container_name: arkon_minio
+    container_name: llm_kb_minio
     restart: always
     command: server /data --console-address ":9001"
     environment:
@@ -76,13 +76,13 @@ services:
 
   migrator:
     <<: *backend
-    container_name: arkon_migrator
+    container_name: llm_kb_migrator
     command: alembic upgrade head
     restart: "no"
 
   api:
     <<: *backend
-    container_name: arkon_api
+    container_name: llm_kb_api
     depends_on:
       migrator:
         condition: service_completed_successfully
@@ -105,7 +105,7 @@ services:
 
   worker:
     <<: *backend
-    container_name: arkon_worker
+    container_name: llm_kb_worker
     command: python -m arq app.worker.WorkerSettings
     depends_on:
       api:
@@ -113,7 +113,7 @@ services:
 
   worker_skills:
     <<: *backend
-    container_name: arkon_worker_skills
+    container_name: llm_kb_worker_skills
     command: python -m arq app.worker.SkillWorkerSettings
     depends_on:
       api:
@@ -125,8 +125,8 @@ services:
       dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:5055}
-    image: arkon-frontend:latest
-    container_name: arkon_frontend
+    image: llm-kb-frontend:latest
+    container_name: llm_kb_frontend
     restart: always
     ports:
       - "3119:3000"

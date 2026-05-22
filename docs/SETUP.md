@@ -1,6 +1,10 @@
 # Setup Guide
 
-Two ways to run Arkon: **Docker** (recommended for production) or **Development** (for local development and contributing).
+Three ways to run Arkon:
+
+- **Option A — Docker** — the full stack in containers. Recommended for production.
+- **Option B — Development** — everything runs natively on your machine. Best for deep debugging and step-through.
+- **Option C — Development with Docker** — backend, database, Redis, MinIO and workers run in containers with hot reload; only the frontend runs in a terminal. No need to install Python, PostgreSQL, Redis or MinIO locally.
 
 ---
 
@@ -448,6 +452,184 @@ npm run dev
 Open **http://localhost:3000**.
 
 > Documents will stay at `pending` status until the worker is running.
+
+---
+
+## Option C — Development with Docker
+
+Runs the whole backend — **PostgreSQL, Redis, MinIO, the API, and both workers** — in Docker with **hot reload**, while you run the frontend directly in a terminal. Use this when you want to work on backend code without installing Python, PostgreSQL, Redis or MinIO on your machine.
+
+The difference from Option A: application source is **bind-mounted** into the containers instead of being copied in, so editing a file under `app/` restarts `uvicorn` automatically — no image rebuild needed.
+
+| | Option A (Docker prod) | **Option C (Docker dev)** | Option B (Local) |
+|---|:---:|:---:|:---:|
+| Backend in Docker | ✅ | ✅ | ❌ |
+| Hot reload | ❌ | ✅ | ✅ |
+| Frontend | Docker | Terminal | Terminal |
+| Python / PostgreSQL installed locally | ❌ | ❌ | ✅ |
+| Infra ports on `localhost` | ❌ | ✅ | ✅ |
+
+Files involved: `Dockerfile.dev` (dependencies-only backend image) and `docker-compose.dev.yml` (the dev stack).
+
+### Prerequisites
+
+- Docker Engine 24+ and Docker Compose v2+
+- Node.js 20+ — the frontend runs on the host
+
+### 1. Clone and configure
+
+```bash
+git clone https://github.com/nduckmink/arkon.git
+cd arkon
+cp .env.docker.example .env.docker
+```
+
+The dev stack reads **`.env.docker`**. The defaults in `.env.docker.example` work out of the box — you can start without editing anything. The values worth reviewing:
+
+```env
+# JWT signing secret — any string is fine for local dev
+SECRET_KEY=dev-only-not-for-production
+
+# Admin account, created on first startup
+DEFAULT_ADMIN_EMAIL=admin@arkon.local
+DEFAULT_ADMIN_PASSWORD=admin123
+```
+
+Leave the **service hostnames unchanged** — they are Docker network names that the backend containers resolve automatically:
+
+| Variable | Value | Why |
+|---|---|---|
+| `DATABASE_URL` | `...@postgres:5432/arkon` | `postgres` = container name |
+| `MINIO_ENDPOINT` | `minio:9000` | `minio` = container name |
+| `REDIS_HOST` | `redis` | `redis` = container name |
+| `REDIS_PASSWORD` | _(empty)_ | The dev stack runs Redis **without a password** — leave it empty |
+| `MINIO_PUBLIC_ENDPOINT` | `localhost:9000` | Used by your **browser** for presigned file URLs |
+| `NEXT_PUBLIC_API_URL` | `http://localhost:5055` | Used by the **terminal frontend** |
+
+> Keep `POSTGRES_PASSWORD` consistent with the password inside `DATABASE_URL` — if you change one, change both.
+
+### 2. Start the backend stack
+
+```bash
+docker compose -f docker-compose.dev.yml --env-file .env.docker up -d --build
+```
+
+This builds `Dockerfile.dev` and starts:
+
+| Container | Purpose | Host port |
+|---|---|:---:|
+| `arkon_dev_postgres` | PostgreSQL 16 + pgvector | 5432 |
+| `arkon_dev_redis` | Redis 7 job queue | 6379 |
+| `arkon_dev_minio` | MinIO file storage | 9000 (console 9001) |
+| `arkon_dev_migrator` | One-shot — runs migrations + seeds skills, then exits | — |
+| `arkon_dev_api` | FastAPI + MCP server (`uvicorn --reload`) | 5055 |
+| `arkon_dev_worker` | Background worker — ingestion + wiki compilation | — |
+| `arkon_dev_worker_skills` | Background worker — AI skill processing | — |
+
+Startup order is enforced: `migrator` runs after the database is healthy, the `api` starts after `migrator` succeeds, and the workers start after `api` passes its health check — so there is no race on startup.
+
+Unlike Option A, the infra ports (`5432` / `6379` / `9000`) are published to `localhost`, so you can attach a DB client, run `redis-cli`, or run the test suite from the host.
+
+PostgreSQL, Redis and MinIO data is persisted to **`./.docker/data/`** in the project (`postgres/`, `redis/`, `minio/`) via bind mounts — so it survives `down`, and is easy to inspect, back up, or wipe. The `.docker/` directory is git-ignored.
+
+Wait for the `api` container to report `healthy`:
+
+```bash
+docker compose -f docker-compose.dev.yml ps
+```
+
+### 3. Run the frontend in a terminal
+
+```bash
+cd frontend
+npm install
+```
+
+Create `frontend/.env.local`:
+
+```env
+NEXT_PUBLIC_API_URL=http://localhost:5055
+```
+
+Start it:
+
+```bash
+npm run dev
+```
+
+Open **http://localhost:3000** and log in with `DEFAULT_ADMIN_EMAIL` / `DEFAULT_ADMIN_PASSWORD` from `.env.docker`.
+
+### Daily workflow
+
+Every command needs the `-f docker-compose.dev.yml` and `--env-file .env.docker` flags. Define a shell alias for the session so the examples below stay short:
+
+```bash
+alias dc='docker compose -f docker-compose.dev.yml --env-file .env.docker'
+```
+
+**Editing code**
+
+| You changed… | What happens |
+|---|---|
+| Anything under `app/` | `uvicorn --reload` restarts the API automatically — **no action needed** |
+| Worker code | `arq` has **no** hot reload — restart the workers: `dc restart worker worker_skills` |
+| `pyproject.toml` (dependencies) | Rebuild the image: `dc up -d --build` |
+
+**Start / stop**
+
+```bash
+dc up -d            # start (or resume) the stack
+dc stop             # stop containers, keep them and the data
+dc start            # start the stopped containers again
+dc restart api      # restart a single service
+dc down             # stop and remove containers (data in ./.docker/data is kept)
+```
+
+To **delete all data** and start from scratch, remove the host data directory while the stack is down:
+
+```bash
+dc down
+rm -rf .docker/data
+```
+
+**Viewing logs**
+
+```bash
+dc logs -f                       # all services, follow live
+dc logs -f api                   # just the API
+dc logs -f worker worker_skills  # both workers
+dc logs --tail=100 api           # last 100 lines of the API
+dc ps                            # status + health of every container
+```
+
+**Running commands inside a container**
+
+```bash
+# Create a new migration after changing a model, then apply it
+dc exec api alembic revision --autogenerate -m "add table"
+dc exec api alembic upgrade head
+
+# Open a PostgreSQL shell
+dc exec postgres psql -U arkon -d arkon
+
+# Run the test suite
+dc exec api pytest
+```
+
+> `migrator` runs `alembic upgrade head` on every `up`, so committed migrations are always applied. You only run `alembic` by hand to create or apply a new migration mid-session.
+
+### Troubleshooting (dev Docker)
+
+| Issue | Solution |
+|---|---|
+| Code edits not picked up | Confirm you edited a file under `app/` (it is bind-mounted) and watch for the reload line in `dc logs -f api`. |
+| Worker still runs old code | `arq` has no hot reload — `dc restart worker worker_skills`. |
+| `port is already allocated` | PostgreSQL/Redis/MinIO are already running on the host. Stop the local service, or comment out the matching `ports:` line in `docker-compose.dev.yml`. |
+| API can't reach the DB / Redis / MinIO | Don't change the hostnames in `.env.docker` — they must stay `postgres` / `redis` / `minio` (Docker network names). |
+| Redis `NOAUTH` / auth errors | The dev stack runs Redis without a password — keep `REDIS_PASSWORD` empty in `.env.docker`. |
+| Frontend shows API errors | `frontend/.env.local` must contain `NEXT_PUBLIC_API_URL=http://localhost:5055`, and the `api` container must be `healthy` (`dc ps`). |
+| Documents stuck at `pending` | Check the workers: `dc logs -f worker worker_skills`. |
+| Want a clean slate | `dc down`, then `rm -rf .docker/data`, then `dc up -d --build`. |
 
 ---
 

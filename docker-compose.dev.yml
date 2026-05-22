@@ -1,0 +1,151 @@
+# ============================================================
+# Arkon — DEVELOPMENT stack
+#
+# Runs the backend API, both workers, and infrastructure
+# (PostgreSQL, Redis, MinIO) in Docker with hot reload.
+# The frontend is NOT included here — run it in a terminal:
+#     cd frontend && npm run dev
+#
+# Start:
+#   docker compose -f docker-compose.dev.yml --env-file .env.docker up -d --build
+#
+# Full guide: docs/SETUP.md → "Option C — Development with Docker".
+# ============================================================
+name: arkon-dev
+
+# Backend image (Dockerfile.dev) shared by api + workers + migrator.
+# Source directories are bind-mounted, so code edits are picked up
+# without rebuilding the image.
+x-backend: &backend
+  build:
+    context: .
+    dockerfile: Dockerfile.dev
+  image: arkon-backend-dev:latest
+  env_file: [.env.docker]
+  restart: unless-stopped
+  volumes:
+    - ./app:/app/app
+    - ./alembic:/app/alembic
+    - ./alembic.ini:/app/alembic.ini
+    - ./skills:/app/skills
+    - ./temp_uploads:/app/temp_uploads
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    minio:
+      condition: service_healthy
+
+services:
+  # ── Infrastructure ────────────────────────────────────────────
+  # Ports are published to localhost so you can attach a DB client,
+  # run redis-cli, or execute the test suite from the host.
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: arkon_dev_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-arkon}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-arkon_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-arkon}
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./.docker/data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-arkon} -d ${POSTGRES_DB:-arkon}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: arkon_dev_redis
+    restart: unless-stopped
+    # Dev runs Redis without a password — keep REDIS_PASSWORD empty in .env.docker.
+    volumes:
+      - ./.docker/data/redis:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    container_name: arkon_dev_minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin123}
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    volumes:
+      - ./.docker/data/minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── Application ───────────────────────────────────────────────
+
+  # One-shot: applies DB migrations + seeds built-in skills, then exits.
+  migrator:
+    <<: *backend
+    container_name: arkon_dev_migrator
+    command: sh -c "alembic upgrade head && python -m app.scripts.seed_skills"
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *backend
+    container_name: arkon_dev_api
+    command: python -m uvicorn app.main:app --host 0.0.0.0 --port 5055 --reload
+    ports:
+      - "5055:5055"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:5055/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+
+  worker:
+    <<: *backend
+    container_name: arkon_dev_worker
+    command: python -m arq app.worker.WorkerSettings
+    depends_on:
+      api:
+        condition: service_healthy
+
+  worker_skills:
+    <<: *backend
+    container_name: arkon_dev_worker_skills
+    command: python -m arq app.worker.SkillWorkerSettings
+    depends_on:
+      api:
+        condition: service_healthy
+
+# Persistent data lives in ./.docker/data/{postgres,redis,minio} on the host
+# (bind mounts, not named volumes) so it is easy to inspect, back up, or wipe.
+# Docker creates the directories on first `up`. To reset: stop the stack and
+# `rm -rf .docker/data`. The whole .docker/ directory is git-ignored.

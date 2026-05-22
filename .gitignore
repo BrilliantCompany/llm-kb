@@ -29,6 +29,12 @@ ENV/
 pg_data/
 minio_data/
 data/
+.docker/
+
+# Deploy
+backups/
+.deploy.lock
+docker-compose.prod.yml
 
 # OS
 .DS_Store
