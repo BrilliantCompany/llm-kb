@@ -17,6 +17,10 @@ import bcrypt
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from google.auth.exceptions import GoogleAuthError
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
+from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -95,6 +99,45 @@ async def authenticate_employee(
     if not verify_password(password, employee.password_hash):
         return None
     return employee
+
+
+async def get_active_employee_by_email(
+    db: AsyncSession, email: str
+) -> Optional[Employee]:
+    """Return an active Employee matching `email`, or None."""
+    stmt = (
+        select(Employee)
+        .where(Employee.email == email, Employee.is_active.is_(True))
+        .options(selectinload(Employee.department), selectinload(Employee.custom_role))
+    )
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+def verify_google_id_token(id_token_str: str) -> Optional[dict]:
+    """
+    Verify a Google-issued ID token against the configured client ID.
+    Returns the decoded payload (with a verified email) or None on any failure.
+    """
+    if not settings.google_client_id:
+        return None
+    try:
+        payload = google_id_token.verify_oauth2_token(
+            id_token_str,
+            google_requests.Request(),
+            settings.google_client_id,
+        )
+    except (ValueError, GoogleAuthError):
+        return None
+    except Exception:
+        # Network errors fetching Google's certs etc. — surface in logs so a
+        # full Google outage doesn't look identical to "user sent bad token".
+        logger.exception("Unexpected error verifying Google ID token")
+        return None
+
+    if not payload.get("email") or not payload.get("email_verified"):
+        return None
+    return payload
 
 
 # ---------------------------------------------------------------------------

@@ -269,3 +269,18 @@ Workspace admins need to invite members and link sources but **do not** automati
 Both accept `?search=` for substring filtering and cap at 500 rows. The bulk-add endpoint `POST /api/projects/{id}/members/bulk` (workspace admin) accepts `{employee_ids, role}` and processes each row in its own savepoint, so a duplicate or stale employee_id in the batch doesn't poison the rest.
 
 The frontend `ProjectDetail` page uses `Promise.allSettled` for these calls — a 403 on the candidate fetches (e.g. a workspace viewer opening the page) no longer sinks the whole load. The "Add members" UI is gated on `isOrgAdmin || workspaceRole === 'admin'` so workspace admins see the picker even when they aren't org admins.
+
+---
+
+## Google Login (optional)
+
+When both `GOOGLE_CLIENT_ID` (backend, audience check) and `NEXT_PUBLIC_GOOGLE_CLIENT_ID` (frontend) are set, the login page renders a "Continue with Google" button alongside the password form.
+
+- Frontend uses Google Identity Services to obtain an ID token, then POSTs it to `POST /api/auth/google`.
+- Backend verifies the token via `google-auth` (signature, audience, expiry, `email_verified`).
+- The verified email is looked up in `employees`. The account must exist and have `is_active=true`.
+- Unknown or inactive emails return `401 User does not exist` — **no auto-provisioning**. Admins must add the employee first.
+- Successful sign-in issues the same JWT as password login; downstream auth (`/auth/me`, RBAC, MCP token rotation, etc.) is unchanged.
+- Password login remains available in parallel.
+
+> **Docker deployment note:** `NEXT_PUBLIC_GOOGLE_CLIENT_ID` is consumed by Next.js at **build time**, not at container runtime. Set it in the host environment (or `.env.docker`) **before** running `docker compose build` — `docker-compose.yml` forwards it as a build arg. Changing it after the image is built requires a rebuild.

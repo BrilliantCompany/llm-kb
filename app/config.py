@@ -42,6 +42,13 @@ class Settings(BaseSettings):
             "Rotating this invalidates every existing token — set once and keep stable."
         ),
     )
+    google_client_id: str = Field(
+        default="",
+        description=(
+            "Google OAuth Client ID — required audience value when verifying "
+            "Google ID tokens. Leave empty to disable Google login."
+        ),
+    )
 
     # --- MinIO ---
     minio_endpoint: str = Field(default="localhost:9000")
