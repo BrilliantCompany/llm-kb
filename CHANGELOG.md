@@ -7,6 +7,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Google login.** New endpoint `POST /api/auth/google` verifies a Google ID
+  token and signs in the employee whose verified email matches an active row
+  in `employees`. Unknown or inactive emails return `401 User does not exist`
+  — no auto-provisioning. The login page renders a "Continue with Google"
+  button when `GOOGLE_CLIENT_ID` (backend audience) and
+  `NEXT_PUBLIC_GOOGLE_CLIENT_ID` (frontend) are configured; otherwise the
+  button is hidden and only password login is shown. Password login is
+  unchanged.
+
 ### Changed
 
 - **MCP `tools/list` now scopes by bearer-token identity.** Reviewer- and

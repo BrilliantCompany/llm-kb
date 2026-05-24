@@ -19,8 +19,10 @@ from app.database.models import Employee, ProjectMember
 from app.services.auth_service import (
     authenticate_employee,
     create_access_token,
+    get_active_employee_by_email,
     get_current_user,
     hash_password,
+    verify_google_id_token,
     verify_password,
 )
 from app.services.permission_engine import get_effective_permissions
@@ -35,6 +37,10 @@ router = APIRouter()
 class LoginRequest(BaseModel):
     email: str
     password: str
+
+
+class GoogleLoginRequest(BaseModel):
+    id_token: str
 
 
 class WorkspaceMembershipOut(BaseModel):
@@ -123,6 +129,34 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
         name=employee.name,
     )
 
+    permissions = get_effective_permissions(employee)
+    workspace_memberships = await _get_workspace_memberships(db, employee.id)
+
+    return LoginResponse(
+        access_token=token,
+        user=_build_user_dict(employee, permissions, [m.model_dump() for m in workspace_memberships]),
+    )
+
+
+@router.post("/auth/google", response_model=LoginResponse)
+async def google_login(req: GoogleLoginRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Authenticate via a Google ID token. The verified email must already belong
+    to an active employee (admin-provisioned). No auto-signup.
+    """
+    payload = verify_google_id_token(req.id_token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid Google token")
+
+    employee = await get_active_employee_by_email(db, payload["email"])
+    if not employee:
+        raise HTTPException(status_code=401, detail="User does not exist")
+
+    token = create_access_token(
+        employee_id=str(employee.id),
+        role=employee.role,
+        name=employee.name,
+    )
     permissions = get_effective_permissions(employee)
     workspace_memberships = await _get_workspace_memberships(db, employee.id)
 

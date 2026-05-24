@@ -1,19 +1,65 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
+const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || "";
+const GOOGLE_GSI_SRC = "https://accounts.google.com/gsi/client";
+
+type GoogleCredentialResponse = { credential?: string };
+
+type GoogleIdApi = {
+  initialize: (config: {
+    client_id: string;
+    callback: (resp: GoogleCredentialResponse) => void;
+  }) => void;
+  renderButton: (
+    element: HTMLElement,
+    options: Record<string, unknown>
+  ) => void;
+};
+
+declare global {
+  interface Window {
+    google?: { accounts?: { id?: GoogleIdApi } };
+  }
+}
+
+function loadGoogleScript(): Promise<void> {
+  if (typeof window === "undefined") return Promise.resolve();
+  if (window.google?.accounts?.id) return Promise.resolve();
+  const existing = document.querySelector<HTMLScriptElement>(
+    `script[src="${GOOGLE_GSI_SRC}"]`
+  );
+  if (existing) {
+    return new Promise((resolve, reject) => {
+      existing.addEventListener("load", () => resolve());
+      existing.addEventListener("error", () => reject(new Error("Failed to load Google script")));
+    });
+  }
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = GOOGLE_GSI_SRC;
+    s.async = true;
+    s.defer = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("Failed to load Google script"));
+    document.head.appendChild(s);
+  });
+}
+
 export default function LoginPage() {
-  const { login } = useAuth();
+  const { login, loginWithGoogle } = useAuth();
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const googleBtnRef = useRef<HTMLDivElement | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -28,6 +74,52 @@ export default function LoginPage() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (!GOOGLE_CLIENT_ID || !googleBtnRef.current) return;
+
+    let cancelled = false;
+    loadGoogleScript()
+      .then(() => {
+        if (cancelled) return;
+        const gid = window.google?.accounts?.id;
+        if (!gid || !googleBtnRef.current) return;
+
+        gid.initialize({
+          client_id: GOOGLE_CLIENT_ID,
+          callback: async (resp) => {
+            if (!resp.credential) {
+              setError("Google did not return a credential");
+              return;
+            }
+            setError("");
+            setLoading(true);
+            try {
+              await loginWithGoogle(resp.credential);
+              router.push("/");
+            } catch (err) {
+              setError(err instanceof Error ? err.message : "Google sign-in failed");
+            } finally {
+              setLoading(false);
+            }
+          },
+        });
+        gid.renderButton(googleBtnRef.current, {
+          theme: "outline",
+          size: "large",
+          width: 320,
+          text: "continue_with",
+          shape: "rectangular",
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setError("Could not load Google sign-in");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loginWithGoogle, router]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background">
@@ -101,6 +193,17 @@ export default function LoginPage() {
               )}
             </Button>
           </form>
+
+          {GOOGLE_CLIENT_ID && (
+            <>
+              <div className="flex items-center gap-3 my-6">
+                <span className="h-px flex-1 bg-border" />
+                <span className="text-xs text-muted-foreground">or</span>
+                <span className="h-px flex-1 bg-border" />
+              </div>
+              <div ref={googleBtnRef} className="flex justify-center" />
+            </>
+          )}
         </div>
 
         <p className="text-center text-xs text-muted-foreground mt-6">
